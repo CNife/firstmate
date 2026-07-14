@@ -901,6 +901,35 @@ EOF
   pass "session start rejects Pi loaded markers from previous sessions"
 }
 
+test_fm_lock_refuses_acquire_against_live_pi_holder() {
+  local rec root home fakebin holder_pid out status
+  rec=$(new_world pi-holder-alive)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_harness "$fakebin" pi
+
+  # A live "pi" session holds the lock. Before the fix holder_alive()
+  # concatenated comm+args into "pi pi" and `^pi$` never matched, so this
+  # holder read as stale and acquire stole the lock - letting two pi sessions
+  # clobber each other. After the fix holder_alive judges it alive and acquire
+  # refuses, surfacing the read-only path.
+  sleep 300 &
+  holder_pid=$!
+  printf '%s\n' "$holder_pid" > "$home/state/.lock"
+
+  status=0
+  out=$(FM_FAKE_HARNESS=pi run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  expect_code 0 "$status" "fm-session-start.sh must exit 0 even on a lock refusal"
+  assert_contains "$out" "another live firstmate session holds the lock" \
+    "fm-lock.sh did not refuse acquire against a live pi holder (holder_alive misjudged pi as stale)"
+  pass "fm-lock.sh refuses acquire when another live pi session holds the lock"
+}
+
 test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
 test_output_ordering_diagnostics_lead
@@ -921,3 +950,4 @@ test_pi_diagnostic_rejects_stale_loaded_marker
 test_pi_diagnostic_accepts_prelock_loaded_marker
 test_pi_diagnostic_rejects_missing_turnend_guard_marker
 test_pi_diagnostic_rejects_previous_session_loaded_marker
+test_fm_lock_refuses_acquire_against_live_pi_holder
